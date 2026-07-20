@@ -1,17 +1,25 @@
+x-migrate: &migrate
+  image: migrate/migrate:v4.19.1
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: "no"
+  networks: [memshelf-services]
+
 services:
   postgres:
-    image: postgres:latest
+    image: postgres:18.4
     container_name: postgres-memshelf
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "${POSTGRES_PORT}:${POSTGRES_PORT}"
+      - "${POSTGRES_PORT}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL" "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 10s
       retries: 5
@@ -20,17 +28,54 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:latest
+    image: redis:8.8.0
     container_name: redis-memshelf
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli ping"]
       interval: 10s
       timeout: 10s
       retries: 5
     ports:
-      - "${REDIS_PORT}:${REDIS_PORT}"
+      - "${REDIS_PORT}:6379"
     volumes:
       - redis-data:/data
     networks:
       - memshelf-services
     restart: unless-stopped
+
+  migrate-core:
+    <<: *migrate
+    volumes:
+      - ../../services/core/migrations:/migrations:ro
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable&x-migrations-table=schema_migrations_core"
+      - "up"
+
+  core:
+    container_name: core-memshelf
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: core
+    networks:
+      - memshelf-services
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrate-core:
+        condition: service_completed_successfully
+
+
+
+
+
+volumes:
+  postgres-data:
+  redis-data:
+
+networks:
+  memshelf-services:
